@@ -1,7 +1,6 @@
-import subprocess
 import sys
 import re
-from z3 import *
+from z3 import Solver, Real, sat
 
 def handle_error(error_message):
     print(f"Ошибка: {error_message}")
@@ -12,28 +11,12 @@ def validate_input(rule):
         handle_error("Неверный формат ввода.")
 
 def extract_functions(expression):
-    """
-    Извлекает все имена функций из выражения.
-    :param expression: строка, содержащая выражение.
-    :return: множество имен функций.
-    """
     return set(re.findall(r'(\w+)\(', expression))
 
 def extract_variables(expression):
-    """
-    Извлекает все переменные из выражения.
-    :param expression: строка, содержащая выражение.
-    :return: множество переменных.
-    """
     return set(re.findall(r'\b([a-z]+)\b', expression))
 
 def construct_interpretation(functions, variables):
-    """
-    Создает словарь для интерпретации функций.
-    :param functions: множество имен функций.
-    :param variables: множество переменных.
-    :return: словарь интерпретаций.
-    """
     interpretations = {}
     for func in functions:
         coefs = [f"a{i}" for i in range(len(variables) + 1)]
@@ -41,12 +24,6 @@ def construct_interpretation(functions, variables):
     return interpretations
 
 def construct_composition(rules, interpretations):
-    """
-    Создает словарь для композиций функций.
-    :param rules: список правил.
-    :param interpretations: словарь интерпретаций.
-    :return: словарь композиций.
-    """
     compositions = {}
     for rule in rules:
         rule = rule.strip()
@@ -61,28 +38,32 @@ def construct_composition(rules, interpretations):
     return compositions
 
 def construct_inequalities(compositions):
-    """
-    Создает словарь для неравенств.
-    :param compositions: словарь композиций.
-    :return: словарь неравенств.
-    """
     inequalities = {}
     for left, right in compositions.items():
         inequalities[left] = right + " >= " + left
     return inequalities
 
-def generate_smt2_spec(inequalities, variables):
-    """
-    Генерирует SMT2-спецификацию для каждого неравенства.
-    :param inequalities: словарь неравенств.
-    :param variables: множество переменных.
-    :return: строка SMT2-спецификации.
-    """
-    smt2_spec = ""
+def parse_expression_to_z3(expr, z3_vars, interpretations):
+    terms = expr.split('+')
+    z3_expr = 0
+    for term in terms:
+        if term in z3_vars:
+            z3_expr += z3_vars[term]
+        elif '(' in term:
+            func_name = term.split('(')[0]
+            z3_expr += sum([z3_vars[coef] for coef in interpretations[func_name]])
+        else:
+            z3_expr += int(term)
+    return z3_expr
+
+def verify_solution(model, inequalities, z3_vars, interpretations):
+    verification_solver = Solver()
     for left, inequality in inequalities.items():
-        smt2_spec += f"(assert {inequality})\n"
-    smt2_spec += "(check-sat)\n"
-    return smt2_spec
+        left_expr, right_expr = inequality.split(" >= ")
+        left_z3 = parse_expression_to_z3(left_expr, z3_vars, interpretations)
+        right_z3 = parse_expression_to_z3(right_expr, z3_vars, interpretations)
+        verification_solver.add(model.eval(left_z3) >= model.eval(right_z3))
+    return verification_solver.check() == sat
 
 def main():
     print("Пример ввода: f(g(x, y)) -> g(x, y)")
@@ -99,20 +80,32 @@ def main():
         except EOFError:
             break
 
-    funcs, variables, interpretations, compositions, inequalities, smt2_spec = process_rules(example.split("\n"))
+    funcs, variables, interpretations, compositions, inequalities = process_rules(example.split("\n"))
     if funcs is None:
         return
-    print("\nФункции и их коэффициенты:")
+    print("\nФункции и их коэффициенты (последний свободный):")
     for func in funcs:
         print(func, interpretations[func])
     print("\nПеременные:")
     print(list(variables))
     print("\nЗапуск Z3 солвера...")
-    try:
-        result = subprocess.run(["z3", "-in"], input=smt2_spec, text=True, capture_output=True)
-        print(result.stdout)
-    except Exception as e:
-        print("Ошибка при запуске Z3:", e)
+
+    z3_vars = {var: Real(var) for var in list(interpretations.values())[0]}
+    s = Solver()
+    for left, inequality in inequalities.items():
+        left_expr, right_expr = inequality.split(" >= ")
+        left_z3 = parse_expression_to_z3(left_expr, z3_vars, interpretations)
+        right_z3 = parse_expression_to_z3(right_expr, z3_vars, interpretations)
+        s.add(left_z3 >= right_z3)
+    if s.check() == sat:
+        model = s.model()
+        print(model)
+        if verify_solution(model, inequalities, z3_vars, interpretations):
+            print("Решение корректно!")
+        else:
+            print("Решение некорректно!")
+    else:
+        print("Не удается удовлетворить условия")
 
 def process_rules(rules):
     funcs = set()
@@ -124,7 +117,7 @@ def process_rules(rules):
             continue
         if '->' not in rule:
             print(f"Ошибка в строке {idx + 1}: {rule}. Ожидается символ '->'.")
-            return None, None, None, None, None, None
+            return None, None, None, None, None
         left, right = rule.split(" -> ")
         funcs.update(extract_functions(left))
         funcs.update(extract_functions(right))
@@ -134,9 +127,8 @@ def process_rules(rules):
     interpretations = construct_interpretation(funcs, variables)
     compositions = construct_composition(rules, interpretations)
     inequalities = construct_inequalities(compositions)
-    smt2_spec = generate_smt2_spec(inequalities, variables)
 
-    return funcs, variables, interpretations, compositions, inequalities, smt2_spec
+    return funcs, variables, interpretations, compositions, inequalities
 
 if __name__ == "__main__":
     main()
