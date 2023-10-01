@@ -2,25 +2,20 @@ import sys
 import re
 from z3 import Solver, Real, sat
 
-
 def handle_error(error_message):
     print(f"Ошибка: {error_message}")
     sys.exit(1)
 
-
 def validate_input(rule):
-    if not re.match(r"^[a-zA-Z0-9_() -><]+$", rule):
+    if not re.match(r"^[a-zA-Z0-9_,() -><]+$", rule):
         handle_error("Неверный формат ввода.")
-
 
 def extract_functions(expression):
     return set(re.findall(r'(\w+)\(', expression))
 
-
 def extract_variables(expression, functions):
     variables = set(re.findall(r'\b([a-z]+)\b', expression))
     return variables - set(functions)
-
 
 def construct_interpretation(functions, variables):
     interpretations = {}
@@ -28,7 +23,6 @@ def construct_interpretation(functions, variables):
         coefs = [f"{func}_a{i}" for i in range(len(variables) + 1)]
         interpretations[func] = coefs
     return interpretations
-
 
 def construct_composition(rules, interpretations):
     compositions = {}
@@ -39,11 +33,16 @@ def construct_composition(rules, interpretations):
         left, right = rule.split(" -> ")
         if '(' in left and '(' in right:
             outer_func = left.split('(')[0]
-            inner_func = left.split('(')[1].split(')')[0]
-            composition = '+'.join(interpretations[outer_func]) + '+' + '+'.join(interpretations[inner_func])
+            inner_elements = left.split('(')[1].split(')')[0].split(',')
+            composition = '+'.join(interpretations[outer_func])
+            for inner_element in inner_elements:
+                inner_element = inner_element.strip()
+                if inner_element in interpretations:
+                    composition += '+' + '+'.join(interpretations[inner_element])
+                else:
+                    composition += '+' + inner_element
             compositions[left] = composition
     return compositions
-
 
 def construct_inequalities(compositions):
     inequalities = {}
@@ -51,20 +50,22 @@ def construct_inequalities(compositions):
         inequalities[left] = right + " >= " + left if ">=" in left else right + " > " + left
     return inequalities
 
-
 def parse_expression_to_z3(expr, z3_vars, interpretations):
     terms = expr.split('+')
     z3_expr = 0
     for term in terms:
+        term = term.strip()
         if term in z3_vars:
             z3_expr += z3_vars[term]
         elif '(' in term:
             func_name = term.split('(')[0]
             z3_expr += sum([z3_vars[coef] for coef in interpretations[func_name]])
         else:
-            z3_expr += int(term)
+            try:
+                z3_expr += int(term)
+            except ValueError:
+                handle_error(f"Неожиданный элемент: {term}")
     return z3_expr
-
 
 def verify_solution(model, inequalities, z3_vars, interpretations):
     verification_solver = Solver()
@@ -76,7 +77,6 @@ def verify_solution(model, inequalities, z3_vars, interpretations):
             model.eval(left_z3) >= model.eval(right_z3)) if ">=" in inequality else verification_solver.add(
             model.eval(left_z3) > model.eval(right_z3))
     return verification_solver.check() == sat
-
 
 def main():
     print("Пример ввода: f(g(x, y)) -> g(x, y)")
@@ -132,7 +132,6 @@ def main():
     else:
         print("Не удается удовлетворить условия")
 
-
 def process_rules(rules):
     funcs = set()
     variables = set()
@@ -151,8 +150,6 @@ def process_rules(rules):
     inequalities = construct_inequalities(compositions)
     return funcs, variables, interpretations, compositions, inequalities
 
-
 if __name__ == "__main__":
     main()
-
 
