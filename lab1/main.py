@@ -1,6 +1,6 @@
 import sys
 import re
-from z3 import Solver, Real, sat
+from z3 import Solver, Int, sat
 
 def handle_error(error_message):
     print(f"Ошибка: {error_message}")
@@ -78,6 +78,17 @@ def verify_solution(model, inequalities, z3_vars, interpretations):
             model.eval(left_z3) > model.eval(right_z3))
     return verification_solver.check() == sat
 
+def construct_monotonicity_constraints(functions, variables, interpretations, z3_vars):
+    constraints = []
+    for func in functions:
+        for var1 in variables:
+            for var2 in variables:
+                if var1 != var2:
+                    f_var1 = parse_expression_to_z3(func + "(" + var1 + ")", z3_vars, interpretations)
+                    f_var2 = parse_expression_to_z3(func + "(" + var2 + ")", z3_vars, interpretations)
+                    constraints.append(f_var1 <= f_var2)
+    return constraints
+
 def main():
     print("Пример ввода: f(g(x, y)) -> g(x, y)")
     print("Когда поступает пустая строка, ввод считается завершенным")
@@ -106,12 +117,15 @@ def main():
     print("\nЗапуск Z3 солвера...")
     z3_vars = {}
     for var in variables:
-        z3_vars[var] = Real(var)
+        z3_vars[var] = Int(var)
     for func, coefs in interpretations.items():
         for coef in coefs:
-            z3_vars[coef] = Real(coef)
+            z3_vars[coef] = Int(coef)
 
     s = Solver()
+    monotonicity_constraints = construct_monotonicity_constraints(funcs, variables, interpretations, z3_vars)
+    s.add(monotonicity_constraints)
+
     for left, inequality in inequalities.items():
         left_expr, right_expr = inequality.split(" >= ") if ">=" in inequality else inequality.split(" > ")
         left_z3 = parse_expression_to_z3(left_expr, z3_vars, interpretations)
@@ -152,4 +166,3 @@ def process_rules(rules):
 
 if __name__ == "__main__":
     main()
-
