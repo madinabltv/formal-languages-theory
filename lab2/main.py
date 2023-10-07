@@ -64,7 +64,7 @@ def build_reachable_states(regex):
         #     G.add_edge(inner_final, final_state)
         #     return start_state, final_state
         else:
-            # Символы
+            # Символ
             symbol = expr[0]
             G.add_edge(start_state, final_state, symbol=symbol)
             return start_state, final_state
@@ -76,12 +76,12 @@ def build_reachable_states(regex):
 def find_matching_parenthesis(expr):
     count = 1
     i = 0
-    while count > 0:
-        i += 1
+    while count > 0 and i<len(expr):
         if expr[i] == '(':
             count += 1
         elif expr[i] == ')':
             count -= 1
+        i+=1
     return expr[:i], expr[i + 1:]
 
 
@@ -127,7 +127,7 @@ def find_matching_star(expr):
 #     return expr, ''
 
 
-def bfs(start_state, final_state):
+def bfs(G, start_state, final_state):
     # Поиск пути BFS в графе
     path = []
     current_state = start_state
@@ -175,11 +175,13 @@ def main():
 
     G, start_state, final_state = build_reachable_states(regex)
 
-    generated_string = bfs(start_state, final_state)
+    generated_string = bfs(G, start_state, final_state)
     print(f"Сгенерированная строка: {generated_string}")
 
     mutated_string = apply_random_mutations(generated_string)
     print(f"Мутированная строка: {mutated_string}")
 
 
-# print(generate_random_regex(10, 3, 20))
+if __name__ == "__main__":
+    main()
+
