@@ -64,7 +64,7 @@ def build_reachable_states(regex):
         #     G.add_edge(inner_final, final_state)
         #     return start_state, final_state
         else:
-            # Символ
+            # Символы
             symbol = expr[0]
             G.add_edge(start_state, final_state, symbol=symbol)
             return start_state, final_state
