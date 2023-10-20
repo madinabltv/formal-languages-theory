@@ -17,12 +17,14 @@ def extract_variables(expression, functions):
     variables = set(re.findall(r'\b([a-z]+)\b', expression))
     return variables - set(functions)
 
-def construct_interpretation(functions, variables):
+def construct_interpretation(functions, rules):
     interpretations = {}
     for func in functions:
-        coefs = [f"{func}_a{i}" for i in range(len(variables) + 1)]
+        max_args = max([rule.count(func) for rule in rules])
+        coefs = [f"{func}_a{i}" for i in range(max_args + 1)]
         interpretations[func] = coefs
     return interpretations
+
 
 def construct_composition(rules, interpretations):
     compositions = {}
@@ -31,17 +33,18 @@ def construct_composition(rules, interpretations):
         if not rule:
             continue
         left, right = rule.split(" -> ")
-        if '(' in left and '(' in right:
-            outer_func = left.split('(')[0]
-            inner_elements = left.split('(')[1].split(')')[0].split(',')
-            composition = '+'.join(interpretations[outer_func])
-            for inner_element in inner_elements:
-                inner_element = inner_element.strip()
-                if inner_element in interpretations:
-                    composition += '+' + '+'.join(interpretations[inner_element])
-                else:
-                    composition += '+' + inner_element
-            compositions[left] = composition
+        if left == right:
+            continue
+        outer_func = left.split('(')[0]
+        inner_elements = left.split('(')[1].split(')')[0].split(',')
+        composition = '+'.join(interpretations[outer_func])
+        for inner_element in inner_elements:
+            inner_element = inner_element.strip()
+            if inner_element in interpretations:
+                composition += '+' + '+'.join(interpretations[inner_element])
+            else:
+                composition += '+' + inner_element
+        compositions[left] = composition
     return compositions
 
 def construct_inequalities(compositions):
@@ -61,10 +64,7 @@ def parse_expression_to_z3(expr, z3_vars, interpretations):
             func_name = term.split('(')[0]
             z3_expr += sum([z3_vars[coef] for coef in interpretations[func_name]])
         else:
-            try:
-                z3_expr += int(term)
-            except ValueError:
-                handle_error(f"Неожиданный элемент: {term}")
+            z3_expr += int(term)
     return z3_expr
 
 def verify_solution(model, inequalities, z3_vars, interpretations):
@@ -73,9 +73,7 @@ def verify_solution(model, inequalities, z3_vars, interpretations):
         left_expr, right_expr = inequality.split(" >= ") if ">=" in inequality else inequality.split(" > ")
         left_z3 = parse_expression_to_z3(left_expr, z3_vars, interpretations)
         right_z3 = parse_expression_to_z3(right_expr, z3_vars, interpretations)
-        verification_solver.add(
-            model.eval(left_z3) >= model.eval(right_z3)) if ">=" in inequality else verification_solver.add(
-            model.eval(left_z3) > model.eval(right_z3))
+        verification_solver.add(model.eval(left_z3) >= model.eval(right_z3)) if ">=" in inequality else verification_solver.add(model.eval(left_z3) > model.eval(right_z3))
     return verification_solver.check() == sat
 
 def construct_monotonicity_constraints(functions, variables, interpretations, z3_vars):
@@ -104,7 +102,7 @@ def main():
             break
 
     funcs, variables, interpretations, compositions, inequalities = process_rules(example.split("\n"))
-    if funcs is None:
+    if not funcs:
         return
 
     print("\nФункции и их коэффициенты (последний свободный):")
@@ -131,6 +129,12 @@ def main():
         left_z3 = parse_expression_to_z3(left_expr, z3_vars, interpretations)
         right_z3 = parse_expression_to_z3(right_expr, z3_vars, interpretations)
         s.add(left_z3 >= right_z3) if ">=" in inequality else s.add(left_z3 > right_z3)
+
+    if not inequalities:
+        print("Unsat")
+        return
+
+    print(s.to_smt2())
 
     if s.check() == sat:
         model = s.model()
@@ -159,10 +163,11 @@ def process_rules(rules):
         variables.update(extract_variables(left, funcs))
         variables.update(extract_variables(right, funcs))
 
-    interpretations = construct_interpretation(funcs, variables)
+    interpretations = construct_interpretation(funcs, rules)
     compositions = construct_composition(rules, interpretations)
     inequalities = construct_inequalities(compositions)
     return funcs, variables, interpretations, compositions, inequalities
+
 
 if __name__ == "__main__":
     main()
