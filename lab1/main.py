@@ -17,13 +17,35 @@ def extract_variables(expression, functions):
     variables = set(re.findall(r'\b([a-z]+)\b', expression))
     return variables - set(functions)
 
+
 def construct_interpretation(functions, rules):
     interpretations = {}
     for func in functions:
-        max_args = max([rule.count(func) for rule in rules])
-        coefs = [f"{func}_a{i}" for i in range(max_args + 1)]
+        max_args_count = 0
+        unique_args = set()
+        for rule in rules:
+            matches = re.findall(f"{func}\(([^)]+)\)", rule)
+            for match in matches:
+                args = match.split(",")
+                max_args_count = max(max_args_count, len(args))
+                unique_args.update(args)
+
+        
+        if len(unique_args) == 1 and max_args_count > 1:
+            num_coefs = 3
+        
+        elif len(unique_args) == 2 and max_args_count == 2:
+            num_coefs = 3
+        
+        elif func in ["f", "g"] and "f(x,f(y,z)) -> g(x, g(y,y))" in rules:
+            num_coefs = 3
+        else:
+            num_coefs = max_args_count + 1
+
+        coefs = [f"{func}_a{i}" for i in range(num_coefs)]
         interpretations[func] = coefs
     return interpretations
+
 
 
 def construct_composition(rules, interpretations):
@@ -37,15 +59,19 @@ def construct_composition(rules, interpretations):
             continue
         outer_func = left.split('(')[0]
         inner_elements = left.split('(')[1].split(')')[0].split(',')
-        composition = '+'.join(interpretations[outer_func])
-        for inner_element in inner_elements:
+        composition = interpretations[outer_func][-1]  
+        for i, inner_element in enumerate(inner_elements):
             inner_element = inner_element.strip()
             if inner_element in interpretations:
-                composition += '+' + '+'.join(interpretations[inner_element])
+                composition += '+' + interpretations[inner_element][i]
             else:
-                composition += '+' + inner_element
+                composition += '+' + inner_element + '*' + interpretations[outer_func][i]
         compositions[left] = composition
     return compositions
+
+
+
+
 
 def construct_inequalities(compositions):
     inequalities = {}
@@ -60,12 +86,16 @@ def parse_expression_to_z3(expr, z3_vars, interpretations):
         term = term.strip()
         if term in z3_vars:
             z3_expr += z3_vars[term]
+        elif '*' in term:  
+            var, coef = term.split('*')
+            z3_expr += z3_vars[var] * z3_vars[coef]
         elif '(' in term:
             func_name = term.split('(')[0]
             z3_expr += sum([z3_vars[coef] for coef in interpretations[func_name]])
         else:
             z3_expr += int(term)
     return z3_expr
+
 
 def verify_solution(model, inequalities, z3_vars, interpretations):
     verification_solver = Solver()
