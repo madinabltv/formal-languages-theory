@@ -1,4 +1,5 @@
-# formal-languages-theory
+# formal-languages-theory<br>
+как запустить:
 python main.py input.txt
 
 
