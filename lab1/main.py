@@ -1,203 +1,236 @@
-import sys
+from __future__ import annotations
 import re
-from z3 import Solver, Int, sat
-
-def handle_error(error_message):
-    print(f"Ошибка: {error_message}")
-    sys.exit(1)
-
-def validate_input(rule):
-    if not re.match(r"^[a-zA-Z0-9_,() -><]+$", rule):
-        handle_error("Неверный формат ввода.")
-
-def extract_functions(expression):
-    return set(re.findall(r'(\w+)\(', expression))
-
-def extract_variables(expression, functions):
-    variables = set(re.findall(r'\b([a-z]+)\b', expression))
-    return variables - set(functions)
+import sys
+from enum import Enum
+from collections import namedtuple
+import subprocess
 
 
-def construct_interpretation(functions, rules):
-    interpretations = {}
-    for func in functions:
-        max_args_count = 0
-        unique_args = set()
-        for rule in rules:
-            matches = re.findall(f"{func}\(([^)]+)\)", rule)
-            for match in matches:
-                args = match.split(",")
-                max_args_count = max(max_args_count, len(args))
-                unique_args.update(args)
+ConstructorDict = dict[str, list[list[str]]]
+IDENTITY = 'id'
 
-        
-        if len(unique_args) == 1 and max_args_count > 1:
-            num_coefs = 3
-        
-        elif len(unique_args) == 2 and max_args_count == 2:
-            num_coefs = 3
-        
-        elif func in ["f", "g"] and "f(x,f(y,z)) -> g(x, g(y,y))" in rules:
-            num_coefs = 3
-        else:
-            num_coefs = max_args_count + 1
+class Constructor:
+    cd: ConstructorDict
 
-        coefs = [f"{func}_a{i}" for i in range(num_coefs)]
-        interpretations[func] = coefs
-    return interpretations
+    def __init__(self, cd: ConstructorDict):
+        self.cd = cd
 
+    @staticmethod
+    def create_variable(name: str):
+        return Constructor(
+            {name: [['1']]}
+        )
 
+    @staticmethod
+    def create_free_coef(value: str):
+        return Constructor(
+            {IDENTITY: [[value]]}
+        )
 
-def construct_composition(rules, interpretations):
-    compositions = {}
-    for rule in rules:
-        rule = rule.strip()
-        if not rule:
-            continue
-        left, right = rule.split(" -> ")
-        if left == right:
-            continue
-        outer_func = left.split('(')[0]
-        inner_elements = left.split('(')[1].split(')')[0].split(',')
-        composition = interpretations[outer_func][-1]  
-        for i, inner_element in enumerate(inner_elements):
-            inner_element = inner_element.strip()
-            if inner_element in interpretations:
-                composition += '+' + interpretations[inner_element][i]
+    def add(self, other: Constructor):
+        for var_name, coefs in other.cd.items():
+            if var_name in self.cd:
+                self.cd[var_name] += other.cd[var_name]
             else:
-                composition += '+' + inner_element + '*' + interpretations[outer_func][i]
-        compositions[left] = composition
-    return compositions
+                self.cd[var_name] = other.cd[var_name]
+
+        return self
+
+    def mul_by_scalar(self, p: str):
+        for var_name, coefs in self.cd.items():
+            self.cd[var_name] = [cs + [p] for cs in coefs]
+
+    def __repr__(self) -> str:
+        return ' + '.join([k + str(v) for k,v in self.cd.items()])
+
+    def get_coef_by_variable(self, name:str):
+        if name not in self.cd:
+            return '0'
+        return  '(+ ' + ' '.join(['(* ' + ' '.join(prod) + ')' for prod in self.cd[name]]) + ')'
 
 
+class LD(Enum):
+    VARSKW = 1
+    EQSIGN = 2
+    COMMA = 3
+    LETTER = 4
+    OPEN = 5
+    CLOSE = 6
+    SKIP = 7
+    EOF = 8
 
 
-
-def construct_inequalities(compositions):
-    inequalities = {}
-    for left, right in compositions.items():
-        inequalities[left] = right + " >= " + left if ">=" in left else right + " > " + left
-    return inequalities
-
-def parse_expression_to_z3(expr, z3_vars, interpretations):
-    terms = expr.split('+')
-    z3_expr = 0
-    for term in terms:
-        term = term.strip()
-        if term in z3_vars:
-            z3_expr += z3_vars[term]
-        elif '*' in term:  
-            var, coef = term.split('*')
-            z3_expr += z3_vars[var] * z3_vars[coef]
-        elif '(' in term:
-            func_name = term.split('(')[0]
-            z3_expr += sum([z3_vars[coef] for coef in interpretations[func_name]])
-        else:
-            z3_expr += int(term)
-    return z3_expr
+LDR = namedtuple('LexDomainRegex', ['regex', 'domain'])
+Lexem = namedtuple('Lexem', ['domain', 'value'])
 
 
-def verify_solution(model, inequalities, z3_vars, interpretations):
-    verification_solver = Solver()
-    for left, inequality in inequalities.items():
-        left_expr, right_expr = inequality.split(" >= ") if ">=" in inequality else inequality.split(" > ")
-        left_z3 = parse_expression_to_z3(left_expr, z3_vars, interpretations)
-        right_z3 = parse_expression_to_z3(right_expr, z3_vars, interpretations)
-        verification_solver.add(model.eval(left_z3) >= model.eval(right_z3)) if ">=" in inequality else verification_solver.add(model.eval(left_z3) > model.eval(right_z3))
-    return verification_solver.check() == sat
+LexDoms = (
+            LDR(r'variables', LD.VARSKW),
+            LDR(r'\=', LD.EQSIGN),
+            LDR(r'\,', LD.COMMA),
+            LDR(r'\(', LD.OPEN),
+            LDR(r'\)', LD.CLOSE),
+            LDR(r'[\s\n\r\t]', LD.SKIP),
+            LDR(r'[a-z]', LD.LETTER),
+        )
 
-def construct_monotonicity_constraints(functions, variables, interpretations, z3_vars):
-    constraints = []
-    for func in functions:
-        for var1 in variables:
-            for var2 in variables:
-                if var1 != var2:
-                    f_var1 = parse_expression_to_z3(func + "(" + var1 + ")", z3_vars, interpretations)
-                    f_var2 = parse_expression_to_z3(func + "(" + var2 + ")", z3_vars, interpretations)
-                    constraints.append(f_var1 <= f_var2)
-    return constraints
 
-def main():
-    print("Пример ввода: f(g(x, y)) -> g(x, y)")
-    print("Когда поступает пустая строка, ввод считается завершенным")
-    example = ""
-    while True:
-        try:
-            line = input()
-            if line == "":
+class MyParser:
+    lexems: list[Lexem]
+    cur: Lexem
+    variables: set[str]
+    constructors: dict[str, int]
+    rules: list[tuple[Constructor, Constructor]]
+
+
+    def __init__(self, file) -> None:
+        string = open(file).read()
+        self.lexemize(string)
+        self.parse()
+
+    def print_lexems(self):
+        print(f'cur: {self.cur}')
+        for x in self.lexems:
+            print(x)
+
+    def lexemize(self, string):
+        self.lexems = []
+        while string:
+            for ld in LexDoms:
+                matched = re.match('^' + ld.regex, string)
+                if matched is None:
+                    continue
+                res = matched[0]
+                string = string[len(res):]
+                if ld.domain == LD.SKIP:
+                    break
+                self.lexems.append(Lexem(ld.domain, res))
                 break
-            validate_input(line)
-            example += line + "\n"
-        except EOFError:
-            break
+            else:
+                raise RuntimeError(f'parsing Error: {string[:20]}')
 
-    funcs, variables, interpretations, compositions, inequalities = process_rules(example.split("\n"))
-    if not funcs:
-        return
+        self.lexems.append(Lexem(LD.EOF, '$'))
 
-    print("\nФункции и их коэффициенты (последний свободный):")
-    for func in funcs:
-        print(func, interpretations[func])
+    def next(self):
+        self.cur = self.lexems[0]
+        self.lexems = self.lexems[1:]
 
-    print("\nПеременные:")
-    print(list(variables))
+    def assert_domain(self, domain):
+        assert self.cur.domain == domain, f'expected {domain}, got {self.cur.domain}'
 
-    print("\nЗапуск Z3 солвера...")
-    z3_vars = {}
-    for var in variables:
-        z3_vars[var] = Int(var)
-    for func, coefs in interpretations.items():
-        for coef in coefs:
-            z3_vars[coef] = Int(coef)
+    def parse(self):
+        self.variables = set()
+        self.constructors = dict()
+        self.rules = []
+        self.next()
 
-    s = Solver()
-    monotonicity_constraints = construct_monotonicity_constraints(funcs, variables, interpretations, z3_vars)
-    s.add(monotonicity_constraints)
+        # variables =
+        self.assert_domain(LD.VARSKW)
+        self.next()
 
-    for left, inequality in inequalities.items():
-        left_expr, right_expr = inequality.split(" >= ") if ">=" in inequality else inequality.split(" > ")
-        left_z3 = parse_expression_to_z3(left_expr, z3_vars, interpretations)
-        right_z3 = parse_expression_to_z3(right_expr, z3_vars, interpretations)
-        s.add(left_z3 >= right_z3) if ">=" in inequality else s.add(left_z3 > right_z3)
+        self.assert_domain(LD.EQSIGN)
+        self.next()
 
-    if not inequalities:
-        print("Unsat")
-        return
+        self.assert_domain(LD.LETTER)
+        self.variables.add(self.cur.value)
+        self.next()
 
-    print(s.to_smt2())
+        while self.cur.domain == LD.COMMA:
+            self.next()
+            self.assert_domain(LD.LETTER)
+            self.variables.add(self.cur.value)
+            self.next()
 
-    if s.check() == sat:
-        model = s.model()
-        for d in model.decls():
-            print(f"{d.name()} = {model[d]}")
-        for coef in z3_vars:
-            if model[z3_vars[coef]] is None:
-                print(f"{coef} = 0")
-        if verify_solution(model, inequalities, z3_vars, interpretations):
-            print("Решение корректно!")
+        while self.cur.domain == LD.LETTER:
+            left = self.parse_constructor()
+            self.assert_domain(LD.EQSIGN)
+            self.next()
+            right = self.parse_constructor()
+            self.rules.append((left, right))
+
+        self.assert_domain(LD.EOF)
+
+
+    def parse_constructor(self) -> Constructor:
+        self.assert_domain(LD.LETTER)
+        name = self.cur.value
+        self.next()
+
+        if name in self.variables:
+            return Constructor.create_variable(name)
+
+        args = []
+        if self.cur.domain == LD.OPEN:
+            self.next()
+            args = self.parse_args()
+            self.assert_domain(LD.CLOSE)
+            self.next()
+
+        if name in self.constructors:
+            assert self.constructors[name] == len(args)
         else:
-            print("Решение некорректно!")
-    else:
-        print("Не удается удовлетворить условия")
+            self.constructors[name] = len(args)
 
-def process_rules(rules):
-    funcs = set()
-    variables = set()
-    for rule in rules:
-        rule = rule.strip()
-        if not rule:
-            continue
-        left, right = rule.split(" -> ")
-        funcs.update(extract_functions(left))
-        funcs.update(extract_functions(right))
-        variables.update(extract_variables(left, funcs))
-        variables.update(extract_variables(right, funcs))
+        res = Constructor.create_free_coef(f'{name}{len(args)+1}')
+        for i, arg in enumerate(args):
+            arg.mul_by_scalar(f'{name}{i+1}')
+            res.add(arg)
 
-    interpretations = construct_interpretation(funcs, rules)
-    compositions = construct_composition(rules, interpretations)
-    inequalities = construct_inequalities(compositions)
-    return funcs, variables, interpretations, compositions, inequalities
+        return res
+
+    def parse_args(self) -> list[Constructor]:
+        args = []
+        args.append(self.parse_constructor())
+        while self.cur.domain == LD.COMMA:
+            self.next()
+            args.append(self.parse_constructor())
+        return args
 
 
-if __name__ == "__main__":
-    main()
+class SMTshnik:
+    res: str
+    mp: MyParser
+
+    def __init__(self, mp) -> None:
+        self.mp = mp
+        self.res = ''
+
+    def add_str(self, string=''):
+        self.res += string + '\n'
+
+    def translate_to_smt(self):
+        self.add_str('(set-logic QF_NIA)')
+        self.add_str()
+
+        for fname, arity in self.mp.constructors.items():
+            for i in range(arity+1):
+                self.add_str(f'(declare-const {fname}{i+1} Int)')
+                self.add_str(f'(assert (>=  {fname}{i+1} {0 if i == arity else 1}))')
+            self.add_str(f'(assert (or {("(and" + " ".join([f"(> {fname}{i+1} 1)" for i in range(arity)]) + ")") if arity > 0 else "" } (> {fname}{arity+1} 0)))')
+            self.add_str()
+        self.add_str()
+
+        for left, right in self.mp.rules:
+            vars = set(left.cd.keys()) | set(right.cd.keys())
+            self.add_str('(assert (or ')
+            for i in range(2):
+                self.add_str('    (and')
+                for var in vars:
+                    sign = '>' if (var != IDENTITY if i == 1 else var == IDENTITY) else '>='
+                    self.add_str(f'        ({sign} {left.get_coef_by_variable(var)} {right.get_coef_by_variable(var)})  ; {var}')
+                self.add_str('    )')
+            self.add_str('))')
+
+        self.add_str()
+        self.add_str('(check-sat)')
+
+    def write(self, file):
+        open(file, 'w').write(self.res)
+
+
+if __name__ == '__main__':
+    mp = MyParser(sys.argv[1])
+    smt = SMTshnik(mp)
+    smt.translate_to_smt()
+    smt.write("res.smt2")
+    subprocess.run("z3 -smt2 res.smt2".split())
