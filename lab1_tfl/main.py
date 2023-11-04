@@ -130,20 +130,17 @@ class MyParser:
 
         self.assert_domain(LD.EQSIGN)
         self.next()
-
-        # первая переменная
+       
         self.assert_domain(LD.LETTER)
         self.variables.add(self.cur.value)
         self.next()
 
-        # остальные переменные
         while self.cur.domain == LD.COMMA:
             self.next()
             self.assert_domain(LD.LETTER)
             self.variables.add(self.cur.value)
             self.next()
 
-        # начались правила
         while self.cur.domain == LD.LETTER:
             left = self.parse_constructor()
             self.assert_domain(LD.EQSIGN)
