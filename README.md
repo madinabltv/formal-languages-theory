@@ -1,6 +1,9 @@
 # formal-languages-theory
-pip install z3-solver <br>
-python3 main.py <br>
+python main.py input.txt
+
+
+
+
 
 ##### Kак установить PIP <br>
 sudo apt-get install python-pip  - для Линукса <br>
